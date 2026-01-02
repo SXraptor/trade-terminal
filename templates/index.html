@@ -3,152 +3,209 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TradeTerminal.ai</title>
+    <title>TradeTerminal.ai - Premium Terminal</title>
+    
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
 </head>
 <body>
 
     <div id="registerModal" class="modal">
         <div class="modal-content">
-            <span class="close" onclick="closeModal('registerModal')" style="float:right; cursor:pointer;">&times;</span>
-            <h3>Register</h3>
+            <span class="close" onclick="closeModal('registerModal')">&times;</span>
+            <h3>Register New Account</h3>
             <div class="auth-form-container">
-                <input type="text" id="reg-username" placeholder="Username">
-                <input type="email" id="reg-email" placeholder="Email">
-                <input type="password" id="reg-password" placeholder="Password (min 8 chars)">
-                <button onclick="handleRegister()">Sign Up</button>
-                <p id="register-message" style="display:none; font-size:0.8rem; margin-top:10px;"></p>
+                <label for="reg-username">Username</label>
+                <input type="text" id="reg-username" placeholder="e.g. PeakFinder">
+                <label for="reg-email">E-mail</label>
+                <input type="email" id="reg-email" placeholder="e.g. trading@terminal.ai">
+                <label for="reg-password">Password (min 8 characters)</label>
+                <input type="password" id="reg-password" placeholder="Password">
+                <button onclick="handleRegister()">Register</button>
+                <p id="reg-message" class="auth-message"></p>
             </div>
         </div>
     </div>
 
     <div id="loginModal" class="modal">
         <div class="modal-content">
-            <span class="close" onclick="closeModal('loginModal')" style="float:right; cursor:pointer;">&times;</span>
+            <span class="close" onclick="closeModal('loginModal')">&times;</span>
             <h3>Log In</h3>
             <div class="auth-form-container">
+                <label for="log-username">Username</label>
                 <input type="text" id="log-username" placeholder="Username">
+                <label for="log-password">Password</label>
                 <input type="password" id="log-password" placeholder="Password">
                 <button onclick="handleLogin()">Log In</button>
-                <p id="login-message" style="display:none; font-size:0.8rem; margin-top:10px;"></p>
+                <p id="log-message" class="auth-message"></p>
             </div>
         </div>
     </div>
 
     <div id="accountModal" class="modal">
         <div class="modal-content">
-            <span class="close" onclick="closeModal('accountModal')" style="float:right; cursor:pointer;">&times;</span>
-            <h3>My Profile</h3>
-            <p>User: <b id="display-username"></b></p>
-            <p>Status: <b id="status-text"></b></p>
-            <hr style="border-color:var(--border); margin:15px 0;">
-            <button id="manage-subscription-btn" onclick="openCustomerPortal()" style="background:var(--accent-green); margin-bottom:10px;">Manage Subscription</button>
-            <button id="upgrade-from-account-btn" onclick="handleUpgradeClick()" style="margin-bottom:10px;">Upgrade to Premium</button>
-            <button onclick="logout()" style="background:var(--accent-red);">Log Out</button>
+            <span class="close" onclick="closeModal('accountModal')">&times;</span>
+            <h3 id="account-modal-title">My Profile</h3>
+            <div id="profile-info">
+                <p><i class="fa-solid fa-user-circle"></i> **User:** <span id="display-username">Guest</span></p>
+                <p id="display-status"><i class="fa-solid fa-star" style="color: var(--text-secondary);"></i> **Status:** <span id="status-text">Free Tier</span></p>
+                
+                <hr style="border-color: var(--border); margin: 15px 0;">
+                
+                <div id="premium-management-area">
+                    <button id="manage-subscription-btn" onclick="openCustomerPortal()" style="background: var(--accent-green); display: none;">
+                        <i class="fa-solid fa-wrench"></i> Manage Subscription (Stripe)
+                    </button>
+                    <button id="upgrade-from-account-btn" onclick="handleUpgradeClick()" style="display: none;">
+                        Upgrade to Premium
+                    </button>
+                </div>
+                
+                <button onclick="logout()" style="background: var(--accent-red);">Log Out</button>
+            </div>
         </div>
     </div>
 
     <div id="premiumModal" class="modal">
         <div class="modal-content">
-            <span class="close" onclick="closeModal('premiumModal')" style="float:right; cursor:pointer;">&times;</span>
-            <h3>Upgrade to Premium</h3>
-            <p>Unlock AI Predictions, Indicators & Real-time Watchlists.</p>
-            <div style="font-size:1.5rem; color:var(--accent-green); font-weight:bold; margin:15px 0;">€19.99 / mo</div>
-            <div id="auth-check"></div>
-            <button id="premium-buy-button" onclick="buyPremium()">Subscribe (Mock)</button>
-            <p id="premium-message" style="display:none; font-size:0.8rem; margin-top:10px;"></p>
+            <span class="close" onclick="closeModal('premiumModal')">&times;</span>
+            <h3>Upgrade to TradeTerminal.ai Premium</h3>
+            <p style="text-align: center; color: var(--text-secondary); font-size: 0.9rem;">Unlock the full power of AI-driven corporate analysis.</p>
+
+            <ul class="premium-benefit-list">
+                <li><i class="fa-solid fa-check-circle"></i> Interactive Corporate Network Graph.</li>
+                <li><i class="fa-solid fa-check-circle"></i> Full AI Scenario Planning & Analysis.</li>
+                <li><i class="fa-solid fa-check-circle"></i> Correlation Coefficients & Leading Indicators.</li>
+                <li><i class="fa-solid fa-check-circle"></i> Unlimited Watchlists & Portfolio Tracking.</li>
+            </ul>
+
+            <div id="auth-check">
+            </div>
+
+            <div class="premium-price">€19.99 / month</div>
+            <button id="premium-buy-button" onclick="buyPremium()">Buy Premium & Register via Stripe</button>
+            <p id="premium-message" class="auth-message" style="display: none;"></p>
         </div>
     </div>
-
     <header>
         <div class="header-left">
             <div class="logo"><i class="fa-solid fa-layer-group"></i> TradeTerminal<span>.ai</span></div>
+            
             <div class="search-container">
                 <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="text" id="search-input" placeholder="Search (e.g. TSLA)..." onkeyup="showSuggestions(this.value)">
-                <div id="suggestions-list" class="suggestions-list"></div>
+                <input type="text" id="search-input" placeholder="Search Ticker or Company (e.g. RDS-A, ASML)..." 
+                       onkeyup="showSuggestions(this.value)" 
+                       onblur="hideSuggestions()" 
+                       onkeydown="handleSearch(event)">
+                <div id="suggestions-list" class="suggestions-list">
+                </div>
             </div>
         </div>
-        <div class="header-center">Focus: <b id="focus-ticker">APPLE INC</b></div>
+
+        <div class="header-center">Focus: <b id="focus-ticker">APPLE INC (US)</b></div>
+        
         <div class="auth-actions">
-            <button id="auth-register-btn" onclick="openModal('registerModal')" style="background: #4f5466;">Register</button>
-            <button id="auth-login-btn" onclick="openModal('loginModal')">Log In</button>
+            <button id="auth-register-btn" onclick="openModal('registerModal')" style="display: none; background: #4f5466;">Register</button>
+            <button id="auth-login-btn" onclick="openModal('loginModal')" style="display: none;">Log In</button>
+            
             <button id="upgrade-button" onclick="handleUpgradeClick()">Upgrade</button>
-            <i class="fa-solid fa-user-circle profile-icon" id="profile-btn" onclick="openProfile()" style="display:none;"></i>
-            <span id="premium-label" class="premium-status" style="display:none;">PREMIUM</span>
+            <i class="fa-solid fa-user-circle profile-icon" id="profile-btn" onclick="openProfile()"></i>
+            <span id="premium-label" class="premium-status" style="display: none;">PREMIUM</span>
         </div>
     </header>
 
     <div class="main-container">
+        
         <div class="left-column">
-            <div class="panel" style="padding:0;">
-                <div id="tradingview_chart" style="height:100%; width:100%;"></div>
+            <div class="panel" id="chart-area" style="padding: 0;">
+                <div id="tradingview_chart" style="height: 100%; width: 100%;"></div>
             </div>
+            
             <div class="panel">
                 <div class="panel-header">
-                    <span><i class="fa-solid fa-chart-line"></i> Fundamentals</span>
+                    <span><i class="fa-solid fa-chart-line"></i> Data & Corporate Governance</span>
+                    <i class="fa-solid fa-ellipsis" style="cursor: pointer;"></i>
                 </div>
+                
                 <div class="financial-tabs-container">
                     <div class="financial-tab-buttons">
-                        <button class="financial-tab-button active" onclick="showFinancialTab('ratios', this)">Ratios</button>
-                        <button class="financial-tab-button" onclick="showFinancialTab('board', this)">Board</button>
+                        <button class="financial-tab-button active" onclick="showFinancialTab('ratios', this)">Financial Ratios</button>
+                        <button class="financial-tab-button" onclick="showFinancialTab('board', this)">Board & Execs</button>
                         <button class="financial-tab-button" onclick="showFinancialTab('ownership', this)">Ownership</button>
-                        <button class="financial-tab-button" onclick="showFinancialTab('reports', this)">Reports</button>
+                        <button class="financial-tab-button" onclick="showFinancialTab('reports', this)">Recent Reports</button>
                     </div>
-                    <div id="financial-tab-content"></div>
+
+                    <div class="tab-content-wrapper" id="financial-tab-content">
+                        </div>
                 </div>
             </div>
         </div>
 
         <div class="right-column">
+            
             <div class="panel ai-panel">
                 <div class="panel-header">
                     <span><i class="fa-solid fa-robot"></i> AI Ecosystem Impact</span>
-                    <span class="ai-badge">GEMINI LITE</span>
+                    <span class="ai-badge">GEMINI PRO</span>
                 </div>
                 <div class="ai-content" id="ai-content">
+                    <p><strong>Summary:</strong> Shell shows resilience ondanks dalende olie prijzen, gedreven door sterke prestaties in de LNG divisie.</p>
+                    
                     <div id="premium-ai-content" style="display: none;">
-                        <p id="ai-prediction-text">Loading analysis...</p>
+                        <p id="ai-prediction-text">Loading advanced AI scenario...</p>
                     </div>
                     <div id="free-ai-content">
-                        <p><strong>Analysis:</strong> Basic overview available. <a href="#" onclick="handleUpgradeClick(event)" style="color:var(--accent-blue);">[Upgrade for AI Sentiment Scan]</a></p>
+                        <p><strong>Analysis:</strong> Results are robust. <a href="#" onclick="handleUpgradeClick(event)">[Upgrade for Full Scenario Analysis]</a></p>
                     </div>
+                     <p class="financial-disclaimer">**DISCLAIMER:** This AI analysis is not official investment advice.</p>
                 </div>
             </div>
 
             <div class="panel" id="panel-right-1">
                 <div class="panel-header">
-                    <span id="panel-right-1-title">Panel 1</span> 
+                    <span id="panel-right-1-title"><i class="fa-solid fa-newspaper"></i> Realtime News Feed</span> 
                     <select id="panel-right-1-selector" class="panel-selector" onchange="loadPanelContent('panel-right-1', this.value)">
-                        <option value="news" selected>Realtime News</option>
-                        <option value="watchlist">Watchlist</option>
-                        <option value="indicators">Indicators (Prem)</option>
-                        <option value="sentiment">Sentiment (Prem)</option>
+                        <option value="news" selected>Realtime News Feed</option>
+                        <option value="watchlist">Watchlist & Portfolio</option>
+                        <option value="network">Corporate Network Insight</option>
+                        <option value="volatility">Volatility Metrics</option>
+                        <option value="indicators">Leading Indicators (PREMIUM)</option>
+                        <option value="sentiment">Social Sentiment Analysis (PREMIUM)</option>
                     </select>
                 </div>
-                <div id="panel-right-1-content" class="panel-content-area"></div>
+                
+                <div id="panel-right-1-content" class="panel-content-area">
+                    </div>
             </div>
 
             <div class="panel" id="panel-right-2" style="border-bottom: none;">
                 <div class="panel-header">
-                    <span id="panel-right-2-title">Panel 2</span>
+                    <span id="panel-right-2-title"><i class="fa-solid fa-code-branch"></i> Corporate Network Insight</span>
                      <select id="panel-right-2-selector" class="panel-selector" onchange="loadPanelContent('panel-right-2', this.value)">
-                        <option value="network" selected>Network</option> 
-                        <option value="news">Realtime News</option>
-                        <option value="watchlist">Watchlist</option>
-                        <option value="volatility">Volatility (Prem)</option>
+                        <option value="network" selected>Corporate Network Insight</option> 
+                        <option value="news">Realtime News Feed</option>
+                        <option value="watchlist">Watchlist & Portfolio</option>
+                        <option value="volatility">Volatility Metrics</option>
+                        <option value="indicators">Leading Indicators (PREMIUM)</option>
+                        <option value="sentiment">Social Sentiment Analysis (PREMIUM)</option>
                     </select>
                 </div>
-                <div id="panel-right-2-content" class="panel-content-area"></div>
+                
+                <div id="panel-right-2-content" class="panel-content-area">
+                    </div>
             </div>
         </div>
-    </div>
+        </div>
     
     <footer>
-        <p>&copy; 2026 TradeTerminal.ai - <a href="/legal">Legal</a></p>
+        <div class="footer-content">
+             <p>&copy; 2026 TradeTerminal.ai. All rights reserved.</p>
+             <p><a href="{{ url_for('legal_page') }}">Privacy Policy & Disclaimer</a></p>
+        </div>
     </footer>
+    
     <script src="https://js.stripe.com/v3/"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
