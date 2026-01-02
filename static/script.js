@@ -1,49 +1,39 @@
 // ===============================================
-// 1. GLOBAL SETTINGS & DATA
+// 1. GLOBAL STATE & SETTINGS
 // ===============================================
 
-const KNOWN_TICKERS = {
-    'SHELL': { symbol: "Euronext:SHELL", name: "SHELL PLC (AMS)", exchange: "AMS" },
-    'ASML': { symbol: "Euronext:ASML", name: "ASML HOLDING (AMS)", exchange: "AMS" },
-    'UNA': { symbol: "Euronext:UNA", name: "UNILEVER PLC (AMS)", exchange: "AMS" },
-    'ING': { symbol: "Euronext:INGA", name: "ING GROEP (AMS)", exchange: "AMS" },
-    'ADIDAS': { symbol: "XETRA:ADS", name: "ADIDAS AG (GER)", exchange: "XETRA" },
-    'TSLA': { symbol: "NASDAQ:TSLA", name: "TESLA INC (US)", exchange: "NASDAQ" },
-    'AAPL': { symbol: "NASDAQ:AAPL", name: "APPLE INC (US)", exchange: "NASDAQ" } 
-};
+let currentFocusTicker = 'AAPL'; // Standaard start ticker
+let currentFocusName = 'Apple Inc';
+let searchTimeout = null; // Voor het vertragen van API calls (debounce)
 
-let activeSuggestionIndex = -1;
-let currentFocusTicker = KNOWN_TICKERS['AAPL'].symbol; 
+// Stripe public key (voor latere uitbreiding, nu optioneel)
 const stripe = Stripe('pk_test_XXX'); 
 
 // ===============================================
-// 2. CORE UTILITY & UI FUNCTIONS
+// 2. UI & MODAL HELPERS
 // ===============================================
 
 function openModal(modalId) { 
     document.getElementById(modalId).style.display = 'block'; 
 }
+
 function closeModal(modalId) { 
     document.getElementById(modalId).style.display = 'none'; 
 }
 
 function showAuthMessage(modalId, message, isError = false) {
-    const msgElement = document.getElementById(`${modalId.replace('Modal', '')}-message`);
+    // Zoek het <p> element voor berichten in de modal
+    const msgId = modalId.replace('Modal', '') + '-message'; 
+    const msgElement = document.getElementById(msgId);
+    
     if (msgElement) {
         msgElement.innerText = message;
-        msgElement.className = 'auth-message';
-        msgElement.style.display = message ? 'block' : 'none'; 
-        if (isError) {
-            msgElement.classList.add('error-message');
-            msgElement.style.color = 'var(--accent-red)'; 
-        } else if (message) {
-            msgElement.style.color = 'var(--accent-green)';
-        } else {
-             msgElement.style.color = 'var(--text-secondary)';
-        }
+        msgElement.style.display = 'block';
+        msgElement.style.color = isError ? 'var(--accent-red)' : 'var(--accent-green)';
     }
 }
 
+// Helper voor consistente Premium "Lock" schermen
 function getPremiumLockedHTML(title, description, buttonText = "Upgrade Now") {
     return `
         <div class="panel-state-message premium-cta-bg">
@@ -55,13 +45,8 @@ function getPremiumLockedHTML(title, description, buttonText = "Upgrade Now") {
     `;
 }
 
-function isValidEmail(email) {
-    const re = /^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$/;
-    return re.test(String(email).toLowerCase());
-}
-
 // ===============================================
-// 3. AUTHENTICATION HANDLERS
+// 3. AUTHENTICATION LOGIC
 // ===============================================
 
 async function getAuthStatus() {
@@ -69,20 +54,23 @@ async function getAuthStatus() {
         const response = await fetch('/api/status');
         return await response.json();
     } catch (error) {
+        console.error("Auth check failed:", error);
         return { loggedIn: false, isPremium: false, username: 'Guest' };
     }
 }
 
 async function handleRegister() {
     const username = document.getElementById('reg-username').value;
-    const email = document.getElementById('reg-email').value;
+    const email = document.getElementById('reg-email').value; // Wordt niet gebruikt in MVP backend, maar wel in UI
     const password = document.getElementById('reg-password').value;
     
-    if (!username.trim() || !isValidEmail(email) || password.length < 8) { 
-        showAuthMessage('registerModal', 'Invalid input.', true); return; 
+    if (!username || password.length < 8) {
+        showAuthMessage('registerModal', 'Vul een naam in en wachtwoord (min 8 tekens).', true);
+        return;
     }
     
-    showAuthMessage('registerModal', 'Registering...');
+    showAuthMessage('registerModal', 'Bezig met registreren...');
+
     try {
         const response = await fetch('/api/register', {
             method: 'POST',
@@ -90,20 +78,24 @@ async function handleRegister() {
             body: JSON.stringify({ username, password }) 
         });
         const data = await response.json();
-        if (response.ok && data.success) { 
-            showAuthMessage('registerModal', 'Success!', false);
-            setTimeout(() => { closeModal('registerModal'); updateUI(); }, 1000);
+
+        if (data.success) { 
+            showAuthMessage('registerModal', 'Succes! Pagina wordt herladen...', false);
+            setTimeout(() => location.reload(), 1000); // Herlaad om in te loggen
         } else {
-            showAuthMessage('registerModal', data.message, true);
+            showAuthMessage('registerModal', data.message || 'Fout bij registreren.', true);
         }
-    } catch (error) { showAuthMessage('registerModal', 'Error.', true); }
+    } catch (error) {
+        showAuthMessage('registerModal', 'Netwerkfout.', true);
+    }
 }
 
 async function handleLogin() {
     const username = document.getElementById('log-username').value;
     const password = document.getElementById('log-password').value;
     
-    showAuthMessage('loginModal', 'Logging in...');
+    showAuthMessage('loginModal', 'Bezig met inloggen...');
+
     try {
         const response = await fetch('/api/login', {
             method: 'POST',
@@ -111,301 +103,509 @@ async function handleLogin() {
             body: JSON.stringify({ username, password })
         });
         const data = await response.json();
-        if (response.ok && data.success) {
-            showAuthMessage('loginModal', 'Success!', false);
-            setTimeout(() => { closeModal('loginModal'); updateUI(); }, 1000);
+
+        if (data.success) {
+            showAuthMessage('loginModal', 'Succes! Pagina wordt herladen...', false);
+            setTimeout(() => location.reload(), 1000);
         } else {
-            showAuthMessage('loginModal', 'Invalid credentials.', true);
+            showAuthMessage('loginModal', 'Ongeldige inloggegevens.', true);
         }
-    } catch (error) { showAuthMessage('loginModal', 'Error.', true); }
+    } catch (error) {
+        showAuthMessage('loginModal', 'Netwerkfout.', true);
+    }
 }
 
 async function logout() {
     await fetch('/api/logout', { method: 'POST' });
-    closeModal('accountModal');
-    updateUI();
+    location.reload();
 }
 
 async function openProfile() {
     const status = await getAuthStatus();
-    if (!status.loggedIn) { openModal('loginModal'); return; }
+    
+    if (!status.loggedIn) {
+        openModal('loginModal');
+        return;
+    }
     
     document.getElementById('display-username').innerText = status.username;
-    document.getElementById('status-text').innerText = status.isPremium ? 'Premium' : 'Free Tier';
+    const statusText = document.getElementById('status-text');
+    statusText.innerText = status.isPremium ? 'Premium Account' : 'Free Tier';
+    statusText.style.color = status.isPremium ? 'gold' : 'var(--text-secondary)';
     
-    const manageBtn = document.getElementById('manage-subscription-btn');
-    const upgradeAccBtn = document.getElementById('upgrade-from-account-btn');
-    
-    manageBtn.style.display = status.isPremium ? 'block' : 'none';
-    upgradeAccBtn.style.display = status.isPremium ? 'none' : 'block';
-    
+    // Toggle knoppen in profiel
+    document.getElementById('manage-subscription-btn').style.display = status.isPremium ? 'block' : 'none';
+    document.getElementById('upgrade-from-account-btn').style.display = status.isPremium ? 'none' : 'block';
+
     openModal('accountModal');
 }
+
+// ===============================================
+// 4. PREMIUM & UPGRADE LOGIC
+// ===============================================
 
 async function handleUpgradeClick(event) {
     if (event) event.preventDefault();
     const status = await getAuthStatus();
-    if (status.isPremium) { openModal('premiumModal'); return; } 
-    // Logic for upgrade modal (simplified for brevity)
+
+    if (status.isPremium) {
+        alert("Je hebt al Premium!");
+        return;
+    }
+    
+    // Reset modal state
+    document.getElementById('premium-message').style.display = 'none';
+    
+    if (!status.loggedIn) {
+        // Als niet ingelogd: toon aangepaste tekst
+        document.getElementById('auth-check').innerHTML = `<p style="color:var(--accent-orange)">Je moet eerst inloggen of registreren.</p>`;
+    } else {
+        document.getElementById('auth-check').innerHTML = ``;
+    }
+
     openModal('premiumModal');
 }
 
 async function buyPremium() {
-    // Calls backend mock
-    await fetch('/api/create-checkout-session', { method: 'POST' });
-    location.reload();
-}
-
-async function openCustomerPortal() {
-    const res = await fetch('/api/customer-portal');
-    const data = await res.json();
-    window.open(data.portal_url, '_blank');
-}
-
-// ===============================================
-// 4. WATCHLIST FUNCTIONS
-// ===============================================
-
-function getFocusTickerKey() {
-    const focusText = document.getElementById('focus-ticker').innerText;
-    for (const key in KNOWN_TICKERS) {
-        if (focusText.includes(KNOWN_TICKERS[key].name.split('(')[0].trim())) return key;
-    }
-    return 'AAPL'; 
-}
-
-function refreshWatchlistPanels() {
-    const p1 = document.getElementById('panel-right-1-selector');
-    const p2 = document.getElementById('panel-right-2-selector');
-    if (p1 && p1.value === 'watchlist') loadWatchlist('panel-right-1');
-    if (p2 && p2.value === 'watchlist') loadWatchlist('panel-right-2');
-}
-
-async function addToWatchlist() {
-    const tickerKey = getFocusTickerKey();
-    const response = await fetch('/api/watchlist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: tickerKey })
-    });
-    const data = await response.json();
-    alert(data.message);
-    refreshWatchlistPanels();
-}
-
-async function removeFromWatchlist(tickerKey) {
-    if (!confirm('Remove?')) return;
-    const response = await fetch('/api/watchlist', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker: tickerKey })
-    });
-    const data = await response.json();
-    alert(data.message);
-    refreshWatchlistPanels();
-}
-
-// WATCHLIST UI LOADING
-async function loadWatchlist(panelId) {
-    const watchlistContent = document.getElementById(`${panelId}-content`); 
     const status = await getAuthStatus();
+    const msg = document.getElementById('premium-message');
     
+    // Voor MVP: Check of ingelogd, daarna mock upgrade
     if (!status.loggedIn) {
-        watchlistContent.innerHTML = `<div class="panel-state-message"><p>Please Log In to view Watchlist.</p><button onclick="openModal('loginModal')" class="main-cta-button">Log In</button></div>`;
+        msg.innerText = "Log eerst in om te upgraden.";
+        msg.style.display = 'block';
+        msg.classList.add('error-message');
         return;
     }
 
+    msg.innerText = "Simulatie Stripe Betaling...";
+    msg.style.display = 'block';
+    msg.classList.remove('error-message');
+
+    // Call backend om status om te zetten
     try {
-        const response = await fetch('/api/watchlist');
+        const response = await fetch('/api/create-checkout-session', { method: 'POST' });
         const data = await response.json();
         
-        if (data.success && data.watchlist.length > 0) {
-            let html = '<ul class="watchlist-list">';
-            data.watchlist.forEach(ticker => {
-                const name = KNOWN_TICKERS[ticker] ? KNOWN_TICKERS[ticker].name.split('(')[0] : ticker;
-                html += `<li class="watchlist-item">
-                    <div onclick="loadTicker('${ticker}')" style="cursor: pointer;">
-                        <span class="watchlist-ticker">${ticker}</span>
-                        <span class="watchlist-name">${name}</span>
-                    </div>
-                    <i class="fa-solid fa-trash-alt remove-icon" onclick="removeFromWatchlist('${ticker}')"></i>
-                </li>`;
-            });
-            html += '</ul>';
-            html += `<div style="text-align: center; margin-top: 10px;"><button onclick="addToWatchlist()" class="small-cta-button">Add Current Focus</button></div>`;
-            watchlistContent.innerHTML = html;
-        } else {
-            watchlistContent.innerHTML = `<div class="panel-state-message"><p>Watchlist is empty.</p><button onclick="addToWatchlist()" class="main-cta-button">Add Current</button></div>`;
+        if (data.success) {
+            msg.innerText = "Betaling geslaagd! Account wordt geüpdatet...";
+            setTimeout(() => location.reload(), 1500);
         }
-    } catch (e) { watchlistContent.innerHTML = 'Error loading watchlist.'; }
+    } catch (e) {
+        msg.innerText = "Er ging iets mis.";
+    }
 }
 
+async function openCustomerPortal() {
+    alert("Dit opent het Stripe klantportaal in productie.");
+}
 
 // ===============================================
-// 5. MODULAR PANEL FUNCTIONS
+// 5. TICKER & SEARCH LOGIC
+// ===============================================
+
+// Dit wordt aangeroepen als de gebruiker typt
+function showSuggestions(query) {
+    const list = document.getElementById('suggestions-list');
+    list.innerHTML = ''; // Leegmaken
+
+    if (query.length < 2) {
+        list.style.display = 'none';
+        return;
+    }
+
+    // Debounce: Wacht 300ms met zoeken zodat we de API niet overbelasten
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(async () => {
+        try {
+            // Echte API call naar backend
+            const response = await fetch(`/api/search?q=${query}`);
+            const data = await response.json();
+
+            if (data.results && data.results.length > 0) {
+                data.results.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'suggestion-item';
+                    // item.displaySymbol is bijv "NASDAQ:AAPL"
+                    div.innerHTML = `<span class="suggestion-ticker">${item.displaySymbol}</span> <span class="suggestion-name">${item.description}</span>`;
+                    div.onclick = () => {
+                        loadTicker(item.displaySymbol, item.description);
+                    };
+                    list.appendChild(div);
+                });
+                list.style.display = 'block';
+            } else {
+                list.style.display = 'none';
+            }
+        } catch (error) {
+            console.error("Search error", error);
+        }
+    }, 300);
+}
+
+function hideSuggestions() {
+    // Korte vertraging zodat click event nog kan vuren
+    setTimeout(() => {
+        document.getElementById('suggestions-list').style.display = 'none';
+    }, 200);
+}
+
+// Hoofdfunctie om een nieuw aandeel te laden
+function loadTicker(symbol, name) {
+    currentFocusTicker = symbol;
+    currentFocusName = name || symbol;
+
+    // 1. Update Header
+    document.getElementById('focus-ticker').innerText = currentFocusName;
+    document.getElementById('search-input').value = ''; // Reset zoekbalk
+    hideSuggestions();
+
+    // 2. Update TradingView Chart
+    new TradingView.widget({
+        "autosize": true,
+        "symbol": symbol, // Gebruik het symbool van de API
+        "interval": "D",
+        "timezone": "Europe/Amsterdam",
+        "theme": "dark",
+        "style": "1",
+        "locale": "en",
+        "enable_publishing": false,
+        "container_id": "tradingview_chart"
+    });
+
+    // 3. Update Panels
+    // Herlaad paneel 1
+    const p1Type = document.getElementById('panel-right-1-selector').value;
+    loadPanelContent('panel-right-1', p1Type);
+
+    // Herlaad paneel 2
+    const p2Type = document.getElementById('panel-right-2-selector').value;
+    loadPanelContent('panel-right-2', p2Type);
+
+    // 4. Update Financials Tab
+    const activeTabBtn = document.querySelector('.financial-tab-button.active');
+    let activeTab = 'ratios';
+    if (activeTabBtn) {
+        // Simpele check welke tab actief is op basis van tekst
+        const text = activeTabBtn.innerText.toLowerCase();
+        if (text.includes('board')) activeTab = 'board';
+        else if (text.includes('ownership')) activeTab = 'ownership';
+        else if (text.includes('reports')) activeTab = 'reports';
+    }
+    showFinancialTab(activeTab, activeTabBtn);
+
+    // 5. Update AI Prediction
+    fetchAIPrediction(symbol);
+}
+
+// ===============================================
+// 6. PANEL CONTENT LOGIC
 // ===============================================
 
 async function loadPanelContent(panelId, type) {
     const contentDiv = document.getElementById(`${panelId}-content`); 
     const titleSpan = document.getElementById(`${panelId}-title`);
     const status = await getAuthStatus();
-    
-    contentDiv.innerHTML = '<div style="padding: 20px; text-align: center;">Loading...</div>';
+
+    // Loading state
+    contentDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-secondary);">Loading data...</div>';
 
     switch (type) {
-        case 'watchlist':
-            titleSpan.innerHTML = '<i class="fa-solid fa-bell"></i> Watchlist';
-            loadWatchlist(panelId);
-            break;
-
         case 'news':
-            titleSpan.innerHTML = '<i class="fa-solid fa-newspaper"></i> Realtime News';
+            titleSpan.innerHTML = '<i class="fa-solid fa-newspaper"></i> News: ' + currentFocusTicker;
             try {
-                // FETCH DATA FROM PYTHON API
-                const res = await fetch('/api/news');
+                // Fetch specifiek nieuws voor dit aandeel
+                const res = await fetch(`/api/news?ticker=${currentFocusTicker}`);
                 const data = await res.json();
                 
                 let html = '<ul class="news-list">';
                 data.news.forEach(item => {
-                    const dotClass = item.important ? 'style="background: var(--accent-red);"' : '';
                     html += `
                         <li class="news-item">
-                            <span class="news-item-dot" ${dotClass}></span>
                             <div class="news-content">
-                                <div class="news-title">${item.title}</div>
+                                <a href="${item.url}" target="_blank" class="news-title" style="text-decoration:none; color:var(--text-primary);">${item.title}</a>
                                 <div class="news-meta"><span>${item.source}</span><span>${item.time}</span></div>
                             </div>
-                        </li>`;
+                        </li>
+                    `;
                 });
                 html += '</ul>';
                 contentDiv.innerHTML = html;
-            } catch (e) { contentDiv.innerHTML = 'Error loading news.'; }
+            } catch (e) {
+                contentDiv.innerHTML = '<p class="error-message">Failed to load news.</p>';
+            }
+            break;
+
+        case 'watchlist':
+            titleSpan.innerHTML = '<i class="fa-solid fa-bell"></i> Watchlist';
+            loadWatchlist(panelId); // Roept aparte functie aan
             break;
 
         case 'network':
             titleSpan.innerHTML = '<i class="fa-solid fa-code-branch"></i> Corporate Network';
-             // (Simplified network view for brevity, reusing previous logic structure)
-            contentDiv.innerHTML = `<div class="panel-state-message"><p>Network Graph</p>${status.isPremium ? '<p class="green">Active</p>' : '<button onclick="handleUpgradeClick()" class="main-cta-button">Upgrade</button>'}</div>`;
+            // Placeholder netwerk
+            const networkHtml = `
+                <div class="network-insight">
+                    <p style="font-size: 0.9rem; margin-bottom: 10px;">Network for: <b>${currentFocusTicker}</b></p>
+                    <div class="network-lists-grid">
+                        <div><p class="network-list-title">Competitors</p><ul class="simple-network-list"><li>Mock Comp A</li><li>Mock Comp B</li></ul></div>
+                        <div><p class="network-list-title">Suppliers</p><ul class="simple-network-list"><li>Mock Supp X</li></ul></div>
+                        <div><p class="network-list-title">Customers</p><ul class="simple-network-list"><li>Mock Cust Y</li></ul></div>
+                    </div>
+                </div>`;
+            
+            if (status.isPremium) {
+                contentDiv.innerHTML = networkHtml + `<div style="margin-top:10px; border-top:1px solid var(--border); padding-top:10px; color:var(--accent-green); text-align:center;"><i class="fa-solid fa-diagram-project"></i> Interactive Graph Active</div>`;
+            } else {
+                contentDiv.innerHTML = networkHtml + getPremiumLockedHTML("Unlock Interactive Graph", "Upgrade to visualize the full supply chain.", "Upgrade Now");
+            }
             break;
             
         case 'indicators':
             titleSpan.innerHTML = '<i class="fa-solid fa-fire"></i> Leading Indicators';
-            if(!status.isPremium) {
-                contentDiv.innerHTML = getPremiumLockedHTML("Unlock Indicators", "Upgrade to see correlation data.");
+            if (!status.isPremium) {
+                contentDiv.innerHTML = getPremiumLockedHTML("Unlock Indicators", "See real-time macro correlations.");
                 return;
             }
+            // Fetch premium data
             try {
                 const res = await fetch('/api/leading_indicators');
                 const data = await res.json();
                 let html = '<ul class="indicator-list">';
-                data.indicators.forEach(i => html += `<li class="indicator-item"><span>${i.name}</span><span>${i.correlation}</span></li>`);
+                data.indicators.forEach(ind => {
+                    html += `<li class="indicator-item"><span>${ind.name}</span><span style="color:var(--accent-green)">${ind.correlation}</span></li>`;
+                });
                 html += '</ul>';
                 contentDiv.innerHTML = html;
-            } catch(e) { contentDiv.innerHTML = 'Error.'; }
-            break;
-            
-        case 'volatility':
-            titleSpan.innerHTML = '<i class="fa-solid fa-wave-square"></i> Volatility';
-            contentDiv.innerHTML = status.isPremium ? '<div>Volatility Data Here</div>' : getPremiumLockedHTML("Unlock Volatility", "Upgrade needed.");
+            } catch (e) { contentDiv.innerHTML = 'Error loading indicators.'; }
             break;
 
         case 'sentiment':
-             titleSpan.innerHTML = '<i class=\"fa-solid fa-comment-dots\"></i> Sentiment';
-             contentDiv.innerHTML = status.isPremium ? '<div>Sentiment Data Here</div>' : getPremiumLockedHTML("Unlock Sentiment", "Upgrade needed.");
-             break;
-    }
-}
-
-// ===============================================
-// 6. FINANCIAL DATA (RATIOS, BOARD)
-// ===============================================
-
-async function showFinancialTab(tabName, clickedButton) {
-    if (clickedButton) {
-        document.querySelectorAll('.financial-tab-button').forEach(btn => btn.classList.remove('active'));
-        clickedButton.classList.add('active');
-    }
-
-    const contentDiv = document.getElementById('financial-tab-content');
-    contentDiv.innerHTML = 'Loading...';
-
-    const currentTicker = getFocusTickerKey();
-    
-    try {
-        // Fetch data from new Python endpoint
-        const res = await fetch(`/api/financials/${tabName}?ticker=${currentTicker}`);
-        const json = await res.json();
-        
-        if (!json.success) { contentDiv.innerHTML = 'Data not available.'; return; }
-        
-        const data = json.data;
-        let html = '';
-
-        if (tabName === 'ratios') {
-            html = '<div class="financial-grid">';
-            for (const [key, val] of Object.entries(data)) {
-                html += `<div class="metric-card"><div class="metric-label">${key.toUpperCase()}</div><div class="metric-value">${val}</div></div>`;
+            titleSpan.innerHTML = '<i class="fa-solid fa-comment-dots"></i> Sentiment Analysis';
+            if (status.isPremium) {
+                contentDiv.innerHTML = `<div style="padding:15px;">
+                    <p><b>Sentiment Score:</b> <span style="color:var(--accent-green)">+0.65 (Positive)</span></p>
+                    <p style="font-size:0.85rem; margin-top:5px;">Based on 500+ sources for ${currentFocusTicker}.</p>
+                </div>`;
+            } else {
+                contentDiv.innerHTML = getPremiumLockedHTML("Unlock Sentiment", "Real-time social sentiment analysis.");
             }
-            html += '</div>';
-        } else if (tabName === 'board') {
-            html = '<ul class="board-list">';
-            data.forEach(m => html += `<li class="board-item"><div class="member-details"><span>${m.name}</span><span style="font-size:0.75rem; color:#787b86;">${m.role}</span></div></li>`);
-            html += '</ul>';
-        } else if (tabName === 'ownership') {
-            html = '<ul class="ownership-list">';
-            data.forEach(o => html += `<li class="ownership-item"><span>${o.shareholder}</span><span>${o.stake}</span></li>`);
-            html += '</ul>';
-        } else if (tabName === 'reports') {
-            html = '<ul class="reports-list">';
-            data.forEach(r => html += `<li><a href="${r.link}">${r.title}</a><span>${r.date}</span></li>`);
-            html += '</ul>';
-        }
-        contentDiv.innerHTML = html;
+            break;
 
-    } catch (e) {
-        contentDiv.innerHTML = 'Error loading financial data.';
+        case 'volatility':
+            titleSpan.innerHTML = '<i class="fa-solid fa-wave-square"></i> Volatility';
+            if (status.isPremium) {
+                contentDiv.innerHTML = `<div style="padding:15px;">Mock Volatility Data for ${currentFocusTicker}</div>`;
+            } else {
+                contentDiv.innerHTML = getPremiumLockedHTML("Unlock Volatility", "Advanced risk metrics (VaR, Skew).");
+            }
+            break;
     }
 }
 
 // ===============================================
-// 7. INITIALIZATION
+// 7. WATCHLIST LOGIC
 // ===============================================
 
-function loadTicker(tickerKey) {
-    const focusTickerElement = document.getElementById('focus-ticker');
-    const chartContainer = document.getElementById('tradingview_chart');
-    const tickerData = KNOWN_TICKERS[tickerKey];
-    
-    if (!tickerData) return;
+async function loadWatchlist(panelId) {
+    const contentDiv = document.getElementById(`${panelId}-content`);
+    const status = await getAuthStatus();
 
-    focusTickerElement.innerHTML = tickerData.name;
-    currentFocusTicker = tickerData.symbol;
-    
-    // Refresh Financials for new ticker
-    const activeTab = document.querySelector('.financial-tab-button.active');
-    const tabName = activeTab ? activeTab.innerText.toLowerCase().includes('ratios') ? 'ratios' : 'board' : 'ratios'; // simple detection
-    showFinancialTab(tabName, activeTab);
+    if (!status.loggedIn) {
+        contentDiv.innerHTML = `
+            <div class="panel-state-message">
+                <p>Log in to view your Watchlist.</p>
+                <button onclick="openModal('loginModal')" class="main-cta-button" style="margin-top:10px;">Log In</button>
+            </div>`;
+        return;
+    }
 
-    chartContainer.innerHTML = '';
-    new TradingView.widget({
-        "autosize": true, "symbol": tickerData.symbol, "interval": "D", "timezone": "Europe/Amsterdam", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "container_id": "tradingview_chart"
+    try {
+        const res = await fetch('/api/watchlist');
+        const data = await res.json();
+        
+        if (data.success && data.watchlist.length > 0) {
+            let html = '<ul class="watchlist-list">';
+            data.watchlist.forEach(ticker => {
+                html += `
+                    <li class="watchlist-item">
+                        <div onclick="loadTicker('${ticker}', '${ticker}')" style="cursor: pointer;">
+                            <span class="watchlist-ticker">${ticker}</span>
+                        </div>
+                        <i class="fa-solid fa-trash-alt remove-icon" onclick="removeFromWatchlist('${ticker}')"></i>
+                    </li>`;
+            });
+            html += '</ul>';
+            // Knop om huidige toe te voegen
+            html += `<div style="text-align:center; margin-top:10px;">
+                <button onclick="addToWatchlist()" class="small-cta-button">Add ${currentFocusTicker}</button>
+            </div>`;
+            contentDiv.innerHTML = html;
+        } else {
+            contentDiv.innerHTML = `
+                <div class="panel-state-message">
+                    <p>Watchlist is empty.</p>
+                    <button onclick="addToWatchlist()" class="main-cta-button">Add ${currentFocusTicker}</button>
+                </div>`;
+        }
+    } catch (e) {
+        contentDiv.innerHTML = 'Error loading watchlist.';
+    }
+}
+
+async function addToWatchlist() {
+    const res = await fetch('/api/watchlist', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ticker: currentFocusTicker })
+    });
+    const data = await res.json();
+    alert(data.message);
+    refreshWatchlistPanels();
+}
+
+async function removeFromWatchlist(ticker) {
+    if (!confirm(`Remove ${ticker}?`)) return;
+    const res = await fetch('/api/watchlist', {
+        method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ ticker: ticker })
+    });
+    const data = await res.json();
+    alert(data.message);
+    refreshWatchlistPanels();
+}
+
+function refreshWatchlistPanels() {
+    // Ververs alle panelen die op 'watchlist' staan
+    ['panel-right-1', 'panel-right-2'].forEach(pid => {
+        const sel = document.getElementById(pid + '-selector');
+        if (sel && sel.value === 'watchlist') loadPanelContent(pid, 'watchlist');
     });
 }
 
-function initApp() {
-    loadTicker('AAPL');
-    loadPanelContent('panel-right-1', 'news');
-    loadPanelContent('panel-right-2', 'network');
+
+// ===============================================
+// 8. FINANCIALS & AI LOGIC
+// ===============================================
+
+async function showFinancialTab(type, btn) {
+    if (btn) {
+        document.querySelectorAll('.financial-tab-button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }
     
-    const p1 = document.getElementById('panel-right-1-selector');
-    if(p1) p1.value = 'news';
-    const p2 = document.getElementById('panel-right-2-selector');
-    if(p2) p2.value = 'network';
+    const content = document.getElementById('financial-tab-content');
+    content.innerHTML = 'Loading financials...';
+    
+    try {
+        const res = await fetch(`/api/financials/${type}?ticker=${currentFocusTicker}`);
+        const json = await res.json();
+        
+        if (type === 'ratios' && json.success) {
+            let html = '<div class="financial-grid">';
+            for (const [key, value] of Object.entries(json.data)) {
+                html += `<div class="metric-card"><div class="metric-label">${key}</div><div class="metric-value">${value}</div></div>`;
+            }
+            html += '</div>';
+            content.innerHTML = html;
+        } else {
+            content.innerHTML = '<div style="padding:10px;">Data only available via paid API (Mock for MVP).</div>';
+        }
+    } catch (e) {
+        content.innerHTML = 'Error fetching data.';
+    }
 }
 
-document.addEventListener('DOMContentLoaded', initApp);
+async function fetchAIPrediction(ticker) {
+    const status = await getAuthStatus();
+    
+    // Toggle zichtbaarheid
+    const freeDiv = document.getElementById('free-ai-content');
+    const premDiv = document.getElementById('premium-ai-content');
+    const aiText = document.getElementById('ai-prediction-text');
+    
+    if (status.isPremium) {
+        if(freeDiv) freeDiv.style.display = 'none';
+        if(premDiv) premDiv.style.display = 'block';
+        
+        if (aiText) {
+            aiText.innerHTML = 'AI Analyzing ' + ticker + '...';
+            try {
+                const res = await fetch('/api/ai_prediction', {
+                    method: 'POST',
+                    headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({ ticker: ticker })
+                });
+                const data = await res.json();
+                aiText.innerHTML = data.prediction;
+            } catch (e) { aiText.innerHTML = 'AI Service Unavailable.'; }
+        }
+    } else {
+        if(freeDiv) freeDiv.style.display = 'block';
+        if(premDiv) premDiv.style.display = 'none';
+    }
+}
 
-// (Utility search functions hidden for brevity, keep existing ones)
-function showSuggestions(val) {} // Keep existing logic
-function hideSuggestions() {}    // Keep existing logic
-function handleSearch(e) {}      // Keep existing logic
+// ===============================================
+// 9. INIT & UI UPDATES
+// ===============================================
+
+async function updateUI() {
+    const status = await getAuthStatus();
+    
+    // Auth buttons zichtbaarheid
+    const regBtn = document.getElementById('auth-register-btn');
+    const logBtn = document.getElementById('auth-login-btn');
+    const profileBtn = document.getElementById('profile-btn');
+    const upgradeBtn = document.getElementById('upgrade-button');
+    const premLabel = document.getElementById('premium-label');
+
+    if (status.loggedIn) {
+        if(regBtn) regBtn.style.display = 'none';
+        if(logBtn) logBtn.style.display = 'none';
+        if(profileBtn) profileBtn.style.display = 'inline-block';
+        
+        if (status.isPremium) {
+            if(upgradeBtn) upgradeBtn.style.display = 'none';
+            if(premLabel) premLabel.style.display = 'inline';
+            if(profileBtn) profileBtn.style.color = 'gold';
+        } else {
+            if(upgradeBtn) upgradeBtn.style.display = 'inline-block';
+            if(premLabel) premLabel.style.display = 'none';
+            if(profileBtn) profileBtn.style.color = 'var(--accent-blue)';
+        }
+    } else {
+        // Uitgelogd
+        if(regBtn) regBtn.style.display = 'inline-block';
+        if(logBtn) logBtn.style.display = 'inline-block';
+        if(profileBtn) profileBtn.style.display = 'none';
+        if(upgradeBtn) upgradeBtn.style.display = 'inline-block';
+        if(premLabel) premLabel.style.display = 'none';
+    }
+    
+    // Ververs AI paneel op basis van premium status
+    fetchAIPrediction(currentFocusTicker);
+    
+    // Ververs panelen (om premium content te tonen/verbergen)
+    ['panel-right-1', 'panel-right-2'].forEach(pid => {
+        const sel = document.getElementById(pid + '-selector');
+        if (sel) loadPanelContent(pid, sel.value);
+    });
+}
+
+// Start Applicatie
+document.addEventListener('DOMContentLoaded', () => {
+    // 1. Initialiseer UI (Auth check)
+    updateUI();
+    
+    // 2. Laad standaard ticker (Apple)
+    loadTicker('AAPL', 'Apple Inc');
+    
+    // 3. Zet standaard panelen (indien niet in HTML hardcoded)
+    const p1 = document.getElementById('panel-right-1-selector');
+    if(p1 && p1.value === 'news') loadPanelContent('panel-right-1', 'news');
+    
+    const p2 = document.getElementById('panel-right-2-selector');
+    if(p2 && p2.value === 'network') loadPanelContent('panel-right-2', 'network');
+});
