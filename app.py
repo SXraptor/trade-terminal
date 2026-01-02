@@ -12,7 +12,7 @@ load_dotenv()
 
 app = Flask(__name__)
 # BELANGRIJK: Zorg voor een secret key in Render environment variables
-app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_local_only')
+app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_local_only_change_in_prod')
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # API KEYS
@@ -37,7 +37,7 @@ def init_db():
     if not conn: return
     c = conn.cursor()
     
-    # Bepaal syntax op basis van database type
+    # Bepaal syntax op basis van database type (Postgres vs SQLite)
     pk_type = "SERIAL PRIMARY KEY" if DATABASE_URL else "INTEGER PRIMARY KEY AUTOINCREMENT"
     
     # Users Tabel
@@ -76,12 +76,12 @@ except Exception as e:
 def fetch_finnhub_news(ticker=None):
     """Haalt nieuws op. Als ticker gegeven is, haalt hij specifiek nieuws op."""
     if not FINNHUB_API_KEY:
-        return [{'title': 'API Key Missing', 'source': 'System', 'time': 'Now', 'important': True}]
+        return [{'title': 'API Key Missing (Check Render Settings)', 'source': 'System', 'time': 'Now', 'url': '#', 'summary': ''}]
 
     try:
         if ticker and ticker != 'market':
             today = datetime.date.today()
-            last_week = today - datetime.timedelta(days=5)
+            last_week = today - datetime.timedelta(days=7) # Laatste 7 dagen
             # Finnhub verwacht kale symbolen (bijv 'AAPL', niet 'NASDAQ:AAPL')
             symbol = ticker.split(':')[1] if ':' in ticker else ticker 
             url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={last_week}&to={today}&token={FINNHUB_API_KEY}"
@@ -92,7 +92,8 @@ def fetch_finnhub_news(ticker=None):
         if r.status_code == 200:
             data = r.json()
             news_items = []
-            for item in data[:15]: # Max 15 items om de UI niet te breken
+            # We pakken max 15 items om de UI niet te overladen
+            for item in data[:15]: 
                 ts = item.get('datetime', 0)
                 time_str = datetime.datetime.fromtimestamp(ts).strftime('%d %b %H:%M')
                 
@@ -107,7 +108,7 @@ def fetch_finnhub_news(ticker=None):
     except Exception as e:
         print(f"News Error: {e}")
         
-    return [{'title': 'Geen nieuws gevonden.', 'source': 'System', 'time': 'Now', 'url': '#'}]
+    return [{'title': 'Geen nieuws gevonden.', 'source': 'System', 'time': 'Now', 'url': '#', 'summary': ''}]
 
 def fetch_company_financials(ticker):
     """Haalt basis financials op."""
@@ -239,7 +240,15 @@ def get_financials(type):
     if type == 'ratios':
         data = fetch_company_financials(ticker)
         if data: return jsonify({'success': True, 'data': data['ratios']})
-    return jsonify({'success': True, 'data': []})
+    
+    # Mock data voor tabs die nog geen gratis API hebben
+    mock_data = []
+    if type == 'board':
+        mock_data = [{'name': 'Data not in free API', 'role': 'Upgrade needed'}]
+    elif type == 'reports':
+        mock_data = [{'title': 'Annual Report (Link)', 'date': '2024', 'link': '#'}]
+        
+    return jsonify({'success': True, 'data': mock_data})
 
 @app.route('/api/watchlist', methods=['GET', 'POST', 'DELETE'])
 def watchlist():
@@ -282,6 +291,7 @@ def create_checkout():
 
 @app.route('/api/ai_prediction', methods=['POST'])
 def ai_prediction():
+    # Check Premium
     if not session.get('is_premium'): 
         return jsonify({'message': 'Premium needed'}), 403
     
@@ -291,38 +301,41 @@ def ai_prediction():
     news_items = fetch_finnhub_news(ticker)
     
     # 2. Gratis Woord-Analyse (Sentiment Scoring)
-    # Dit vervangt de dure ChatGPT call
-    positive_words = ['up', 'rise', 'profit', 'gain', 'bull', 'growth', 'record', 'buy', 'strong', 'high', 'beat', 'soar']
-    negative_words = ['down', 'drop', 'loss', 'bear', 'risk', 'inflation', 'crash', 'sell', 'weak', 'low', 'miss', 'fall']
+    # Dit vervangt de dure ChatGPT call voor de MVP
+    positive_words = ['up', 'rise', 'profit', 'gain', 'bull', 'growth', 'record', 'buy', 'strong', 'high', 'beat', 'soar', 'surge']
+    negative_words = ['down', 'drop', 'loss', 'bear', 'risk', 'inflation', 'crash', 'sell', 'weak', 'low', 'miss', 'fall', 'cut']
     
     score = 0
     analyzed_count = 0
     
     for item in news_items:
+        # Combineer titel en samenvatting voor betere context
         text = (item['title'] + " " + item.get('summary', '')).lower()
+        
+        # Simpele tel-logica
         for w in positive_words: 
             if w in text: score += 1
         for w in negative_words: 
             if w in text: score -= 1
         analyzed_count += 1
         
-    # 3. Conclusie trekken
+    # 3. Conclusie trekken op basis van score
     if score > 1:
         sentiment = "Bullish (Positief)"
-        color = "#26a69a" # Green
-        advice = "Het nieuws duidt op groei en positief momentum."
+        color = "#26a69a" # Groen
+        advice = "Het marktsentiment toont positief momentum op basis van recent nieuws."
     elif score < -1:
         sentiment = "Bearish (Negatief)"
-        color = "#ef5350" # Red
-        advice = "Recente berichten bevatten meerdere risicofactoren."
+        color = "#ef5350" # Rood
+        advice = "Recente berichten bevatten meerdere risicofactoren of negatieve trends."
     else:
         sentiment = "Neutraal / Gemengd"
-        color = "#787b86" # Grey
-        advice = "Geen overduidelijke trend in de laatste nieuwsberichten."
+        color = "#b2b5be" # Grijs
+        advice = "Geen overduidelijke trend zichtbaar in de laatste nieuwsberichten."
         
     prediction_html = (
         f"**AI Sentiment Scan:** <span style='color:{color}; font-weight:bold;'>{sentiment}</span><br>"
-        f"<span style='font-size:0.8rem; color:#787b86;'>Score: {score} | Bronnen: {analyzed_count}</span><br>"
+        f"<span style='font-size:0.8rem; color:#787b86;'>Score: {score} | Geanalyseerde bronnen: {analyzed_count}</span><br>"
         f"<br>{advice}"
     )
     
@@ -331,10 +344,11 @@ def ai_prediction():
 @app.route('/api/leading_indicators')
 def get_leading_indicators():
     if not session.get('is_premium'): return jsonify({'message': 'Premium needed'}), 403
-    # Mock data voor MVP
+    # Mock data voor MVP (Macro data APIs zijn vaak duur)
     return jsonify({'success': True, 'indicators': [
         {'name': 'Sector Trend', 'correlation': '0.85', 'impact': 'Hoog', 'change': '+2.1%'},
-        {'name': 'Rente Impact', 'correlation': '-0.42', 'impact': 'Middel', 'change': 'Stabiel'}
+        {'name': 'Rente Gevoeligheid', 'correlation': '-0.42', 'impact': 'Middel', 'change': 'Stabiel'},
+        {'name': 'Grondstofprijzen', 'correlation': '0.60', 'impact': 'Laag', 'change': '+0.5%'}
     ]})
 
 if __name__ == '__main__':
