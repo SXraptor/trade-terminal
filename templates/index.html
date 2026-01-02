@@ -107,11 +107,11 @@
         <div class="header-center">Focus: <b id="focus-ticker">APPLE INC (US)</b></div>
         
         <div class="auth-actions">
-            <button id="auth-register-btn" onclick="openModal('registerModal')" style="display: none; background: #4f5466;">Register</button>
-            <button id="auth-login-btn" onclick="openModal('loginModal')" style="display: none;">Log In</button>
-            
-            <button id="upgrade-button" onclick="handleUpgradeClick()">Upgrade</button>
-            <i class="fa-solid fa-user-circle profile-icon" id="profile-btn" onclick="openProfile()"></i>
+            <button id="auth-register-btn" onclick="openModal('registerModal')" style="background: #4f5466;">Register</button>
+            <button id="auth-login-btn" onclick="openModal('loginModal')">Log In</button>
+    
+            <button id="upgrade-button" onclick="handleUpgradeClick()" style="display: none;">Upgrade</button>
+            <i class="fa-solid fa-user-circle profile-icon" id="profile-btn" onclick="openProfile()" style="display: none;"></i>
             <span id="premium-label" class="premium-status" style="display: none;">PREMIUM</span>
         </div>
     </header>
@@ -209,4 +209,5 @@
     <script src="https://js.stripe.com/v3/"></script>
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>
+
 </html>
