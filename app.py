@@ -1,6 +1,6 @@
-from flask import Flask, render_template, request, jsonify, session
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 import sqlite3
-import psycopg2 
+import psycopg2 # Nieuw voor PostgreSQL
 import psycopg2.extras
 from werkzeug.security import generate_password_hash, check_password_hash
 import os
@@ -10,51 +10,68 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ===============================================
+# 1. APP CONFIGURATIE
+# ===============================================
+
 app = Flask(__name__)
-# BELANGRIJK: Zorg voor een secret key in Render environment variables
-app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_local_only_change_in_prod')
+app.secret_key = os.environ.get('SECRET_KEY', 'dev_key_local')
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # API KEYS
 FINNHUB_API_KEY = os.environ.get('FINNHUB_API_KEY') 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+DATABASE_URL = os.environ.get('DATABASE_URL') # Dit wordt ingevuld door Render
 
-# --- DATABASE VERBINDING ---
 def get_db_connection():
-    try:
-        if DATABASE_URL:
-            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-        else:
-            conn = sqlite3.connect('users.db')
-            conn.row_factory = sqlite3.Row
-        return conn
-    except Exception as e:
-        print(f"Database connection error: {e}")
-        return None
+    """Schakelt automatisch tussen SQLite (lokaal) en PostgreSQL (online)."""
+    if DATABASE_URL:
+        # We zitten op Render (Productie)
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+    else:
+        # We zitten lokaal (Development)
+        conn = sqlite3.connect('users.db')
+        conn.row_factory = sqlite3.Row # Zorgt dat we kolommen bij naam kunnen noemen
+    return conn
 
 def init_db():
+    """Maakt tabellen aan (werkt voor zowel SQLite als Postgres)."""
     conn = get_db_connection()
-    if not conn: return
     c = conn.cursor()
     
-    # Bepaal syntax op basis van database type (Postgres vs SQLite)
-    pk_type = "SERIAL PRIMARY KEY" if DATABASE_URL else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    # Syntax is iets anders voor Postgres (SERIAL) vs SQLite (AUTOINCREMENT)
+    # We gebruiken generieke SQL waar mogelijk
     
-    # Users Tabel
-    c.execute(f'''
+    # Users Table
+    c.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            id {pk_type},
+            id SERIAL PRIMARY KEY,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            is_premium BOOLEAN NOT NULL DEFAULT FALSE,
+            stripe_customer_id TEXT 
+        )
+    '''.replace('SERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT') if not DATABASE_URL else '''
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             is_premium BOOLEAN NOT NULL DEFAULT FALSE,
             stripe_customer_id TEXT 
         )
     ''')
-    
-    # Watchlist Tabel
-    c.execute(f'''
+
+    # Watchlist Table
+    c.execute('''
         CREATE TABLE IF NOT EXISTS watchlist (
-            id {pk_type},
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, ticker)
+        )
+    '''.replace('SERIAL PRIMARY KEY', 'INTEGER PRIMARY KEY AUTOINCREMENT') if not DATABASE_URL else '''
+        CREATE TABLE IF NOT EXISTS watchlist (
+            id SERIAL PRIMARY KEY,
             user_id INTEGER NOT NULL,
             ticker TEXT NOT NULL,
             added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -65,75 +82,51 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Initialiseer database bij opstarten
+# Initialiseer DB bij start
 try:
     init_db()
 except Exception as e:
-    print(f"DB Init Error: {e}")
+    print(f"DB Init Warning: {e}")
 
-# --- HELPER FUNCTIES ---
+# ===============================================
+# 2. HELPER FUNCTIES
+# ===============================================
 
-def fetch_finnhub_news(ticker=None):
-    """Haalt nieuws op. Als ticker gegeven is, haalt hij specifiek nieuws op."""
-    if not FINNHUB_API_KEY:
-        return [{'title': 'API Key Missing (Check Render Settings)', 'source': 'System', 'time': 'Now', 'url': '#', 'summary': ''}]
-
-    try:
-        if ticker and ticker != 'market':
-            today = datetime.date.today()
-            last_week = today - datetime.timedelta(days=7) # Laatste 7 dagen
-            # Finnhub verwacht kale symbolen (bijv 'AAPL', niet 'NASDAQ:AAPL')
-            symbol = ticker.split(':')[1] if ':' in ticker else ticker 
-            url = f"https://finnhub.io/api/v1/company-news?symbol={symbol}&from={last_week}&to={today}&token={FINNHUB_API_KEY}"
-        else:
+def fetch_finnhub_news():
+    if FINNHUB_API_KEY:
+        try:
             url = f"https://finnhub.io/api/v1/news?category=general&token={FINNHUB_API_KEY}"
-            
-        r = requests.get(url)
-        if r.status_code == 200:
-            data = r.json()
-            news_items = []
-            # We pakken max 15 items om de UI niet te overladen
-            for item in data[:15]: 
-                ts = item.get('datetime', 0)
-                time_str = datetime.datetime.fromtimestamp(ts).strftime('%d %b %H:%M')
-                
-                news_items.append({
-                    'title': item['headline'],
-                    'source': item['source'],
-                    'time': time_str,
-                    'url': item.get('url', '#'),
-                    'summary': item.get('summary', '') # Nodig voor AI analyse
-                })
-            return news_items
-    except Exception as e:
-        print(f"News Error: {e}")
-        
-    return [{'title': 'Geen nieuws gevonden.', 'source': 'System', 'time': 'Now', 'url': '#', 'summary': ''}]
+            r = requests.get(url)
+            if r.status_code == 200:
+                data = r.json()
+                news_items = []
+                for item in data[:10]:
+                    news_items.append({
+                        'title': item['headline'],
+                        'source': item['source'],
+                        'time': datetime.datetime.fromtimestamp(item['datetime']).strftime('%H:%M'),
+                        'important': False
+                    })
+                return news_items
+        except Exception:
+            pass
+    return [
+        {'title': 'Market Data currently unavailable (Check API Key)', 'source': 'System', 'time': 'Now', 'important': True}
+    ]
 
-def fetch_company_financials(ticker):
-    """Haalt basis financials op."""
-    if not FINNHUB_API_KEY: return {}
-    symbol = ticker.split(':')[1] if ':' in ticker else ticker
-    try:
-        url = f"https://finnhub.io/api/v1/stock/metric?symbol={symbol}&metric=all&token={FINNHUB_API_KEY}"
-        r = requests.get(url)
-        if r.status_code == 200:
-            metrics = r.json().get('metric', {})
-            return {
-                'ratios': {
-                    'P/E Ratio': f"{metrics.get('peExclExtraTTM', 'N/A')}",
-                    'Div Yield': f"{metrics.get('dividendYieldIndicatedAnnual', 'N/A')}%",
-                    'Market Cap': f"{metrics.get('marketCapitalization', 'N/A')}M",
-                    'Debt/Equity': f"{metrics.get('totalDebt/totalEquityQuarterly', 'N/A')}",
-                    'ROE': f"{metrics.get('roeTTM', 'N/A')}%",
-                    '52W High': f"{metrics.get('52WeekHigh', 'N/A')}"
-                }
-            }
-    except Exception:
-        pass
-    return {}
+def fetch_company_profile(ticker):
+    # Mock data, want volledige financials kosten geld bij API's
+    symbol = ticker.split(':')[1].split('(')[0].strip() if ':' in ticker else ticker
+    return {
+        'ratios': { 'price': '€31.45', 'pe': '7.8x', 'div': '4.1%', 'mcap': '210B' },
+        'board': [{'name': 'CEO Name', 'role': 'CEO'}],
+        'ownership': [{'shareholder': 'BlackRock', 'stake': '8.1%'}],
+        'reports': [{'title': f'Annual Report ({symbol})', 'date': '2025', 'link': '#'}]
+    }
 
-# --- ROUTES ---
+# ===============================================
+# 3. ROUTES
+# ===============================================
 
 @app.route('/')
 def index():
@@ -143,76 +136,66 @@ def index():
 def legal_page():
     return render_template('legal.html')
 
-@app.route('/api/search')
-def search_ticker():
-    query = request.args.get('q', '')
-    if not query or not FINNHUB_API_KEY: return jsonify({'results': []})
-    try:
-        url = f"https://finnhub.io/api/v1/search?q={query}&token={FINNHUB_API_KEY}"
-        r = requests.get(url)
-        if r.status_code == 200:
-            data = r.json()
-            results = []
-            for item in data.get('result', [])[:10]:
-                if '.' not in item['symbol']: 
-                    results.append({
-                        'symbol': item['symbol'],
-                        'description': item['description'],
-                        'displaySymbol': item['displaySymbol']
-                    })
-            return jsonify({'results': results})
-    except Exception: pass
-    return jsonify({'results': []})
-
-# --- AUTH ROUTES ---
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    if not username or not password: return jsonify({'success': False, 'message': 'Vul alles in.'}), 400
+    
+    if not username or not password:
+        return jsonify({'success': False, 'message': 'Vul alles in.'}), 400
 
     hashed_pw = generate_password_hash(password)
+    
     conn = get_db_connection()
     c = conn.cursor()
     try:
-        ph = "%s" if DATABASE_URL else "?"
-        c.execute(f"INSERT INTO users (username, password) VALUES ({ph}, {ph})", (username, hashed_pw))
+        c.execute("INSERT INTO users (username, password) VALUES (%s, %s)" if DATABASE_URL else "INSERT INTO users (username, password) VALUES (?, ?)", (username, hashed_pw))
         conn.commit()
         
-        c.execute(f"SELECT id, is_premium FROM users WHERE username = {ph}", (username,))
+        # Ophalen ID voor sessie
+        c.execute("SELECT id, is_premium FROM users WHERE username = %s" if DATABASE_URL else "SELECT id, is_premium FROM users WHERE username = ?", (username,))
         user = c.fetchone()
         
-        uid = user['id'] if not DATABASE_URL else user[0]
-        prem = user['is_premium'] if not DATABASE_URL else user[1]
-        
-        session['user_id'] = uid
+        # Row factory of tuple handling
+        user_id = user['id'] if not DATABASE_URL and isinstance(user, sqlite3.Row) else user[0]
+        is_premium = user['is_premium'] if not DATABASE_URL and isinstance(user, sqlite3.Row) else user[1]
+
+        session['user_id'] = user_id
         session['username'] = username
-        session['is_premium'] = bool(prem)
-        session.permanent = True
+        session['is_premium'] = bool(is_premium)
+        
         return jsonify({'success': True})
-    except: return jsonify({'success': False, 'message': 'Naam bezet.'}), 400
-    finally: conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': 'Gebruikersnaam bestaat al of serverfout.'}), 400
+    finally:
+        conn.close()
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
     conn = get_db_connection()
     c = conn.cursor()
-    ph = "%s" if DATABASE_URL else "?"
-    c.execute(f"SELECT id, password, is_premium FROM users WHERE username = {ph}", (data.get('username'),))
+    c.execute("SELECT id, password, is_premium FROM users WHERE username = %s" if DATABASE_URL else "SELECT id, password, is_premium FROM users WHERE username = ?", (username,))
     user = c.fetchone()
     conn.close()
     
-    if user:
-        stored_pw = user[1] if DATABASE_URL else user['password']
-        if check_password_hash(stored_pw, data.get('password')):
-            session['user_id'] = user[0] if DATABASE_URL else user['id']
-            session['username'] = data.get('username')
-            session['is_premium'] = bool(user[2] if DATABASE_URL else user['is_premium'])
-            session.permanent = True
-            return jsonify({'success': True})
-    return jsonify({'success': False, 'message': 'Login fout.'}), 401
+    # Handle tuple (Postgres) vs Row (SQLite)
+    stored_pw = user[1] if DATABASE_URL else user['password'] if user else None
+    
+    if user and check_password_hash(stored_pw, password):
+        user_id = user[0] if DATABASE_URL else user['id']
+        is_prem = user[2] if DATABASE_URL else user['is_premium']
+        
+        session['user_id'] = user_id
+        session['username'] = username
+        session['is_premium'] = bool(is_prem)
+        return jsonify({'success': True})
+    
+    return jsonify({'success': False, 'message': 'Foutieve login.'}), 401
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
@@ -221,135 +204,71 @@ def logout():
 
 @app.route('/api/status')
 def status():
-    return jsonify({
-        'loggedIn': 'user_id' in session,
-        'username': session.get('username', 'Guest'),
-        'isPremium': session.get('is_premium', False)
-    })
-
-# --- DATA ROUTES ---
+    if 'user_id' in session:
+        return jsonify({'loggedIn': True, 'username': session['username'], 'isPremium': session.get('is_premium', False)})
+    return jsonify({'loggedIn': False, 'isPremium': False, 'username': 'Guest'})
 
 @app.route('/api/news')
 def get_news():
-    ticker = request.args.get('ticker')
-    return jsonify({'success': True, 'news': fetch_finnhub_news(ticker)})
+    return jsonify({'success': True, 'news': fetch_finnhub_news()})
 
 @app.route('/api/financials/<type>')
 def get_financials(type):
-    ticker = request.args.get('ticker', 'AAPL')
-    if type == 'ratios':
-        data = fetch_company_financials(ticker)
-        if data: return jsonify({'success': True, 'data': data['ratios']})
-    
-    # Mock data voor tabs die nog geen gratis API hebben
-    mock_data = []
-    if type == 'board':
-        mock_data = [{'name': 'Data not in free API', 'role': 'Upgrade needed'}]
-    elif type == 'reports':
-        mock_data = [{'title': 'Annual Report (Link)', 'date': '2024', 'link': '#'}]
-        
-    return jsonify({'success': True, 'data': mock_data})
+    ticker = request.args.get('ticker', 'SHELL')
+    data = fetch_company_profile(ticker)
+    return jsonify({'success': True, 'data': data.get(type, [])})
 
 @app.route('/api/watchlist', methods=['GET', 'POST', 'DELETE'])
 def watchlist():
     if 'user_id' not in session: return jsonify({'success': False}), 401
-    uid = session['user_id']
+    user_id = session['user_id']
     conn = get_db_connection()
     c = conn.cursor()
-    ph = "%s" if DATABASE_URL else "?"
-    
+
     if request.method == 'GET':
-        c.execute(f"SELECT ticker FROM watchlist WHERE user_id = {ph}", (uid,))
+        c.execute("SELECT ticker FROM watchlist WHERE user_id = %s" if DATABASE_URL else "SELECT ticker FROM watchlist WHERE user_id = ?", (user_id,))
         rows = c.fetchall()
         tickers = [r[0] for r in rows]
         conn.close()
         return jsonify({'success': True, 'watchlist': tickers})
-        
+
     if request.method == 'POST':
         ticker = request.get_json().get('ticker')
         try:
-            c.execute(f"INSERT INTO watchlist (user_id, ticker) VALUES ({ph}, {ph})", (uid, ticker))
+            c.execute("INSERT INTO watchlist (user_id, ticker) VALUES (%s, %s)" if DATABASE_URL else "INSERT INTO watchlist (user_id, ticker) VALUES (?, ?)", (user_id, ticker))
             conn.commit()
-            return jsonify({'success': True, 'message': 'Added.'})
-        except: return jsonify({'success': False, 'message': 'Exists.'})
-        finally: conn.close()
+            return jsonify({'success': True, 'message': f'{ticker} toegevoegd.'})
+        except Exception:
+            return jsonify({'success': False, 'message': 'Reeds in lijst.'})
+        finally:
+            conn.close()
 
     if request.method == 'DELETE':
         ticker = request.get_json().get('ticker')
-        c.execute(f"DELETE FROM watchlist WHERE user_id = {ph} AND ticker = {ph}", (uid, ticker))
+        c.execute("DELETE FROM watchlist WHERE user_id = %s AND ticker = %s" if DATABASE_URL else "DELETE FROM watchlist WHERE user_id = ? AND ticker = ?", (user_id, ticker))
         conn.commit()
         conn.close()
-        return jsonify({'success': True, 'message': 'Removed.'})
+        return jsonify({'success': True, 'message': 'Verwijderd.'})
 
-# --- PREMIUM & AI LOGICA ---
-
-@app.route('/api/create-checkout-session', methods=['POST'])
-def create_checkout():
-    session['is_premium'] = True
-    session.modified = True
-    return jsonify({'success': True})
-
+# --- MOCKS ---
 @app.route('/api/ai_prediction', methods=['POST'])
 def ai_prediction():
-    # Check Premium
-    if not session.get('is_premium'): 
-        return jsonify({'message': 'Premium needed'}), 403
-    
-    ticker = request.get_json().get('ticker', 'Unknown')
-    
-    # 1. Haal echt nieuws op
-    news_items = fetch_finnhub_news(ticker)
-    
-    # 2. Gratis Woord-Analyse (Sentiment Scoring)
-    # Dit vervangt de dure ChatGPT call voor de MVP
-    positive_words = ['up', 'rise', 'profit', 'gain', 'bull', 'growth', 'record', 'buy', 'strong', 'high', 'beat', 'soar', 'surge']
-    negative_words = ['down', 'drop', 'loss', 'bear', 'risk', 'inflation', 'crash', 'sell', 'weak', 'low', 'miss', 'fall', 'cut']
-    
-    score = 0
-    analyzed_count = 0
-    
-    for item in news_items:
-        # Combineer titel en samenvatting voor betere context
-        text = (item['title'] + " " + item.get('summary', '')).lower()
-        
-        # Simpele tel-logica
-        for w in positive_words: 
-            if w in text: score += 1
-        for w in negative_words: 
-            if w in text: score -= 1
-        analyzed_count += 1
-        
-    # 3. Conclusie trekken op basis van score
-    if score > 1:
-        sentiment = "Bullish (Positief)"
-        color = "#26a69a" # Groen
-        advice = "Het marktsentiment toont positief momentum op basis van recent nieuws."
-    elif score < -1:
-        sentiment = "Bearish (Negatief)"
-        color = "#ef5350" # Rood
-        advice = "Recente berichten bevatten meerdere risicofactoren of negatieve trends."
-    else:
-        sentiment = "Neutraal / Gemengd"
-        color = "#b2b5be" # Grijs
-        advice = "Geen overduidelijke trend zichtbaar in de laatste nieuwsberichten."
-        
-    prediction_html = (
-        f"**AI Sentiment Scan:** <span style='color:{color}; font-weight:bold;'>{sentiment}</span><br>"
-        f"<span style='font-size:0.8rem; color:#787b86;'>Score: {score} | Geanalyseerde bronnen: {analyzed_count}</span><br>"
-        f"<br>{advice}"
-    )
-    
-    return jsonify({'prediction': prediction_html})
+    if not session.get('is_premium'): return jsonify({'message': 'Premium needed'}), 403
+    return jsonify({'prediction': "**AI Analyse:** Bullish trend verwacht op basis van macro-economische indicatoren."})
 
 @app.route('/api/leading_indicators')
 def get_leading_indicators():
     if not session.get('is_premium'): return jsonify({'message': 'Premium needed'}), 403
-    # Mock data voor MVP (Macro data APIs zijn vaak duur)
-    return jsonify({'success': True, 'indicators': [
-        {'name': 'Sector Trend', 'correlation': '0.85', 'impact': 'Hoog', 'change': '+2.1%'},
-        {'name': 'Rente Gevoeligheid', 'correlation': '-0.42', 'impact': 'Middel', 'change': 'Stabiel'},
-        {'name': 'Grondstofprijzen', 'correlation': '0.60', 'impact': 'Laag', 'change': '+0.5%'}
-    ]})
+    return jsonify({'success': True, 'indicators': [{'name': 'Koper', 'correlation': '0.78', 'impact': 'Hoog', 'change': '+1.2%'}]})
+
+@app.route('/api/create-checkout-session', methods=['POST'])
+def create_checkout():
+    session['is_premium'] = True
+    return jsonify({'success': True, 'checkout_url': '/'})
+
+@app.route('/api/customer-portal')
+def customer_portal():
+    return jsonify({'portal_url': '#'})
 
 if __name__ == '__main__':
     app.run(debug=True)
