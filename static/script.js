@@ -3,6 +3,7 @@
 // ===============================================
 
 function saveAppState() {
+    // Slaat de huidige staat op zodat we kunnen herladen zonder gegevensverlies
     const state = {
         ticker: currentFocusTicker,
         name: currentFocusName,
@@ -89,17 +90,23 @@ async function updateUI() {
         if(premLabel) premLabel.style.display = 'none';
     }
     
-    // Refresh AI box
+    // Refresh AI box op basis van premium status
     fetchAIPrediction(currentFocusTicker);
+    
+    // Refresh panels om premium content te tonen/verbergen
+    const p1 = document.getElementById('panel-right-1-selector');
+    if(p1) loadPanelContent('panel-right-1', p1.value);
+    const p2 = document.getElementById('panel-right-2-selector');
+    if(p2) loadPanelContent('panel-right-2', p2.value);
 }
 
 // HANDLERS
 async function handleRegister() {
     const u = document.getElementById('reg-username').value;
     const p = document.getElementById('reg-password').value;
-    if(!u || p.length < 8) { showAuthMessage('registerModal', 'Invalid input', true); return; }
+    if(!u || p.length < 8) { showAuthMessage('registerModal', 'Vul naam en wachtwoord (min 8) in.', true); return; }
     
-    showAuthMessage('registerModal', 'Registering...');
+    showAuthMessage('registerModal', 'Bezig met registreren...');
     const res = await fetch('/api/register', { 
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({username: u, password: p})
@@ -112,14 +119,14 @@ async function handleRegister() {
 async function handleLogin() {
     const u = document.getElementById('log-username').value;
     const p = document.getElementById('log-password').value;
-    showAuthMessage('loginModal', 'Logging in...');
+    showAuthMessage('loginModal', 'Bezig met inloggen...');
     const res = await fetch('/api/login', { 
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({username: u, password: p})
     });
     const data = await res.json();
     if(data.success) reloadWithState();
-    else showAuthMessage('loginModal', 'Invalid credentials', true);
+    else showAuthMessage('loginModal', 'Ongeldige gegevens', true);
 }
 
 async function logout() {
@@ -130,13 +137,14 @@ async function logout() {
 
 async function handleUpgradeClick() {
     const status = await getAuthStatus();
-    if(status.isPremium) { alert("Already Premium"); return; }
+    if(status.isPremium) { alert("Je hebt al Premium!"); return; }
     openModal('premiumModal');
 }
 
 async function buyPremium() {
-    document.getElementById('premium-message').innerText = "Activating Mock Premium...";
+    document.getElementById('premium-message').innerText = "Betaling simuleren...";
     document.getElementById('premium-message').style.display = 'block';
+    // Backend call om status om te zetten
     await fetch('/api/create-checkout-session', {method: 'POST'});
     setTimeout(() => reloadWithState(), 1000);
 }
@@ -145,13 +153,13 @@ async function openProfile() {
     const status = await getAuthStatus();
     if (!status.loggedIn) { openModal('loginModal'); return; }
     document.getElementById('display-username').innerText = status.username;
-    document.getElementById('status-text').innerText = status.isPremium ? 'Premium' : 'Free Tier';
+    document.getElementById('status-text').innerText = status.isPremium ? 'Premium Account' : 'Free Tier';
     document.getElementById('manage-subscription-btn').style.display = status.isPremium ? 'block' : 'none';
     document.getElementById('upgrade-from-account-btn').style.display = status.isPremium ? 'none' : 'block';
     openModal('accountModal');
 }
 
-async function openCustomerPortal() { alert("Opens Stripe Portal in Production"); }
+async function openCustomerPortal() { alert("Opent Stripe Portaal (Alleen in Productie)"); }
 
 // ===============================================
 // 4. SEARCH & TICKER
@@ -194,7 +202,7 @@ function loadTicker(symbol, name) {
 
     // Chart Update
     new TradingView.widget({
-        "autosize": true, "symbol": symbol, "interval": "D", "timezone": "Etc/UTC", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "container_id": "tradingview_chart"
+        "autosize": true, "symbol": symbol, "interval": "D", "timezone": "Europe/Amsterdam", "theme": "dark", "style": "1", "locale": "en", "enable_publishing": false, "container_id": "tradingview_chart"
     });
 
     // Panels Update
@@ -219,7 +227,7 @@ async function loadPanelContent(panelId, type) {
     const title = document.getElementById(`${panelId}-title`);
     const status = await getAuthStatus();
     
-    content.innerHTML = '<div style="padding:20px; text-align:center; color:#787b86;">Loading...</div>';
+    content.innerHTML = '<div style="padding:20px; text-align:center; color:#787b86;">Data laden...</div>';
 
     if (type === 'news') {
         title.innerHTML = '<i class="fa-solid fa-newspaper"></i> News';
@@ -227,35 +235,39 @@ async function loadPanelContent(panelId, type) {
             const res = await fetch(`/api/news?ticker=${currentFocusTicker}`);
             const data = await res.json();
             let html = '<ul class="news-list">';
-            data.news.forEach(n => {
-                html += `<li class="news-item"><div class="news-content"><a href="${n.url}" target="_blank" class="news-title">${n.title}</a><div class="news-meta"><span>${n.source}</span><span>${n.time}</span></div></div></li>`;
-            });
+            if(data.news.length > 0) {
+                data.news.forEach(n => {
+                    html += `<li class="news-item"><div class="news-content"><a href="${n.url}" target="_blank" class="news-title">${n.title}</a><div class="news-meta"><span>${n.source}</span><span>${n.time}</span></div></div></li>`;
+                });
+            } else {
+                html += '<li class="news-item">Geen recent nieuws gevonden.</li>';
+            }
             content.innerHTML = html + '</ul>';
-        } catch(e) { content.innerHTML = 'Error loading news'; }
+        } catch(e) { content.innerHTML = 'Fout bij laden nieuws.'; }
 
     } else if (type === 'watchlist') {
         title.innerHTML = '<i class="fa-solid fa-bell"></i> Watchlist';
         if(!status.loggedIn) { 
-            content.innerHTML = `<div class="panel-state-message"><p>Login required</p><button class="main-cta-button" onclick="openModal('loginModal')">Log In</button></div>`; 
+            content.innerHTML = `<div class="panel-state-message"><p>Log in voor Watchlist</p><button class="main-cta-button" onclick="openModal('loginModal')">Inloggen</button></div>`; 
             return; 
         }
         
         const res = await fetch('/api/watchlist');
         const data = await res.json();
         let html = '<ul class="watchlist-list">';
-        if(data.watchlist) {
+        if(data.watchlist && data.watchlist.length > 0) {
             data.watchlist.forEach(t => {
                 html += `<li class="watchlist-item" onclick="loadTicker('${t}','${t}')"><span>${t}</span><i class="fa-solid fa-trash" onclick="event.stopPropagation(); removeFromWatchlist('${t}')"></i></li>`;
             });
         }
-        html += `</ul><div style="text-align:center; margin-top:10px;"><button class="small-cta-button" onclick="addToWatchlist()">+ Add ${currentFocusTicker}</button></div>`;
+        html += `</ul><div style="text-align:center; margin-top:10px;"><button class="small-cta-button" onclick="addToWatchlist()">+ Voeg ${currentFocusTicker} toe</button></div>`;
         content.innerHTML = html;
         
     } else {
         // Premium Panels
         title.innerText = type.charAt(0).toUpperCase() + type.slice(1);
         if(!status.isPremium) {
-            content.innerHTML = getPremiumLockedHTML(`Unlock ${type}`, "Advanced analysis requires Premium.");
+            content.innerHTML = getPremiumLockedHTML(`Unlock ${type}`, "Geavanceerde data vereist Premium.", "Upgrade Nu");
         } else {
             // Mock Premium Content (behalve Indicators)
             if(type === 'indicators') {
@@ -265,7 +277,7 @@ async function loadPanelContent(panelId, type) {
                 data.indicators.forEach(i => html += `<li class="indicator-item"><span>${i.name}</span><span style="color:var(--accent-green)">${i.correlation}</span></li>`);
                 content.innerHTML = html + '</ul>';
             } else {
-                content.innerHTML = `<div style="padding:20px;">Premium Analysis for ${currentFocusTicker} Active.</div>`;
+                content.innerHTML = `<div style="padding:20px;">Premium ${type} data voor ${currentFocusTicker} actief.</div>`;
             }
         }
     }
@@ -277,7 +289,7 @@ async function addToWatchlist() {
     refreshWatchlists();
 }
 async function removeFromWatchlist(t) {
-    if(!confirm('Delete?')) return;
+    if(!confirm('Verwijderen?')) return;
     await fetch('/api/watchlist', {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ticker: t})});
     refreshWatchlists();
 }
@@ -300,7 +312,13 @@ async function showFinancialTab(type, btn) {
             let html = '<div class="financial-grid">';
             for(const [k, v] of Object.entries(json.data)) html += `<div class="metric-card"><div class="metric-label">${k}</div><div class="metric-value">${v}</div></div>`;
             content.innerHTML = html + '</div>';
-        } else { content.innerHTML = '<div style="padding:10px;">Data unavailable via API.</div>'; }
+        } else if (type !== 'ratios' && json.data.length > 0) {
+             let html = '<ul class="news-list">';
+             json.data.forEach(item => html += `<li class="news-item">${item.title || item.name}</li>`);
+             content.innerHTML = html + '</ul>';
+        } else { 
+            content.innerHTML = '<div style="padding:10px;">Data niet beschikbaar in gratis API.</div>'; 
+        }
     } catch(e) { content.innerHTML = 'Error'; }
 }
 
@@ -315,7 +333,7 @@ async function fetchAIPrediction(ticker) {
         if(freeDiv) freeDiv.style.display = 'none';
         if(premDiv) premDiv.style.display = 'block';
         if(aiText) {
-            aiText.innerHTML = 'Scanning news sources...';
+            aiText.innerHTML = 'AI scant nieuwsbronnen...';
             try {
                 const res = await fetch('/api/ai_prediction', {
                     method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ticker: ticker})
@@ -332,17 +350,22 @@ async function fetchAIPrediction(ticker) {
 
 // START
 document.addEventListener('DOMContentLoaded', () => {
+    // Check local storage voor opgeslagen staat
     const saved = restoreAppState();
+    
+    // Herstel selectors
     if (saved) {
         if(document.getElementById('panel-right-1-selector')) document.getElementById('panel-right-1-selector').value = saved.panel1;
         if(document.getElementById('panel-right-2-selector')) document.getElementById('panel-right-2-selector').value = saved.panel2;
+        updateUI(); // Zet knoppen goed
         loadTicker(saved.ticker, saved.name);
     } else {
+        updateUI();
         loadTicker('AAPL', 'Apple Inc');
+        // Defaults
         loadPanelContent('panel-right-1', 'news');
         loadPanelContent('panel-right-2', 'network');
         if(document.getElementById('panel-right-1-selector')) document.getElementById('panel-right-1-selector').value = 'news';
         if(document.getElementById('panel-right-2-selector')) document.getElementById('panel-right-2-selector').value = 'network';
     }
-    updateUI();
 });
